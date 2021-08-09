@@ -41,47 +41,71 @@ void folder_sync::print_paths(const std::vector<fs::path> &paths, const fs::path
     }
 }
 
-void folder_sync::analyze_paths() {
-    source_paths = get_paths(source);
-    target_paths = get_paths(target);
-
-    for (auto it_t = target_paths.begin(); it_t != target_paths.end(); ++it_t) {
-        for (auto it_s = source_paths.begin();; ++it_s) {
-            if (it_s == source_paths.end()) {
-                uniq_for_target.push_back(*it_t);
-                break;
-            }
-            if (fs::relative(*it_s, source) == fs::relative(*it_t, target)) {
-                matches.push_back(*it_s);
-                break;
-            }
-        }
-    }
-
-    std::wcout << L"*******************Source paths*******************" << std::endl;
-    print_paths(source_paths, source);
-
-    std::wcout << L"*******************Unique paths to delete*******************" << std::endl;
-    print_paths(uniq_for_target, target);
-}
-
-void folder_sync::run_sync() {
-    remove();
-    copy();
-}
-
 std::vector<fs::path> folder_sync::get_paths(const fs::path &_path) {
     std::vector<fs::path> paths;
     for (const auto &entry : fs::recursive_directory_iterator(_path)) {
-        if (fs::is_regular_file(entry.path()) || fs::is_directory(entry.path())) {
+        if (fs::is_regular_file(entry.path())) {
             paths.push_back(entry.path());
         }
     }
     return paths;
 }
 
-void folder_sync::remove() {
-    for (const auto &elem : uniq_for_target) {
+std::vector<fs::path> folder_sync::get_unique(const std::vector<fs::path> &_target, const fs::path &_target_parent,
+                                              const std::vector<fs::path> &_other, const fs::path &_other_parent){
+    std::vector<fs::path> uniq;
+    for (auto it_t = _target.begin(); it_t != _target.end(); ++it_t) {
+        for (auto it_o = _other.begin();; ++it_o) {
+            if (it_o == _other.end()) {
+                uniq.push_back(*it_t);
+                break;
+            }
+            if (fs::relative(*it_t, _target_parent) == fs::relative(*it_o, _other_parent)) {
+                break;
+            }
+        }
+    }
+    return uniq;
+}
+
+std::vector<fs::path> folder_sync::get_newer(const std::vector<fs::path> &_first, const fs::path &_first_parent,
+                                             const std::vector<fs::path> &_second, const fs::path &_second_parent){
+    std::vector<fs::path> newer;
+    for (const auto &f : _first) {
+        for (const auto &s : _second) {
+            if ((fs::relative(f, _first_parent) == fs::relative(s, _second_parent)) &&
+                (fs::last_write_time(f) > fs::last_write_time(s))) {
+                newer.push_back(f);
+                break;
+            }
+        }
+    }
+    return newer;
+}
+
+void folder_sync::analyze_paths() {
+    source_paths = get_paths(source);
+    target_paths = get_paths(target);
+
+    newer_paths = get_newer(source_paths, source, target_paths, target);
+    uniq_for_source = get_unique(source_paths, source, target_paths, target);
+    uniq_for_target = get_unique(target_paths, target, source_paths, source);
+
+    std::wcout << L"*******************Update these paths*******************" << std::endl;
+    print_paths(newer_paths, source);
+
+    std::wcout << L"*******************Delete these paths*******************" << std::endl;
+    print_paths(uniq_for_target, target);
+}
+
+void folder_sync::run_sync() {
+    remove(uniq_for_target);
+    copy(newer_paths, target);
+    copy(uniq_for_source, target);
+}
+
+void folder_sync::remove(const std::vector<fs::path> &_paths) {
+    for (const auto &elem : _paths) {
         std::wcout << std::left << std::setw(50) << std::setfill(L'-') << elem.wstring();
 
         bool is_removed = false;
@@ -100,9 +124,9 @@ void folder_sync::remove() {
     }
 }
 
-void folder_sync::copy() {
-    for (const auto &elem : source_paths) {
-        fs::path new_path = target.wstring() + L"\\" + fs::relative(elem, source).wstring();
+void folder_sync::copy(const std::vector<fs::path> &from_copy, const fs::path &to_parent) {
+    for (const auto &elem : from_copy) {
+        fs::path new_path = to_parent.wstring() + L"\\" + fs::relative(elem, source).wstring();
         if (fs::is_directory(elem)) {
             fs::create_directory(new_path);
         } else if (fs::is_regular_file(elem)) {
